@@ -1,0 +1,112 @@
+title Blue/Green Switchover
+
+participant Atlas
+database #blue BlueDB
+database #SeaGreen GreenDB
+database #blue BluePrimeDB
+actor InfraEngineer
+participant Route53
+
+lifelinestyle BlueDB #blue:2:dashed
+lifelinestyle GreenDB #SeaGreen:2:dashed
+lifelinestyle BluePrimeDB #blue:2:dashed
+
+
+autonumber 1
+
+
+note over BlueDB:Our beloved CoreDB, running MySQL 5
+note over GreenDB:Clone of BlueDB, upgraded to MySQL 8
+note over BluePrimeDB:Clone of BlueDB (fallback cluster)
+note over Atlas:Atlas manages the connections to CoreDB.\nIt uses two distinct endpoints for Reads vs. Writes.\nInitially, both Reads and Writes endpoint resolve to BlueDB.
+
+
+Atlas -> BlueDB:Executes Read and Write Queries Successfully
+
+
+group #lightgrey Setup Replication Chain
+InfraEngineer -> GreenDB:Sets up replication \nfrom BlueDB to GreenDB
+BlueDB -> GreenDB:Replication begins
+InfraEngineer -> BluePrimeDB:Sets up replication \nfrom GreenDB to BluePrimeDB
+GreenDB -> BluePrimeDB:Replication begins
+Atlas -> BlueDB:Continues executing Read and Write Queries Successfully
+end
+
+group #lightyellow Validate read workloads
+InfraEngineer -> Atlas:Sets Read env var to Read endpoint + GreenDB's endpoint (service by sersersce)
+Atlas -> Atlas:Deploys sersice
+Atlas -> BlueDB:50% of Read Queries go to BlueDB (no replication lag)
+Atlas -> GreenDB:50% of Read Queries go to GreenDB (experiences replication lag)
+Atlas -> BlueDB:Continues executing Write Queries Successfully
+
+end
+
+
+
+group #yellow Switchover Reads
+InfraEngineer -> Atlas:Sets Read env var to GreenDB's endpoint (sersersce by sersice)
+Atlas -> Atlas:Deploys sersice
+Atlas -> GreenDB:Executes Read Queries Successfully (experiences replication lag)
+
+group #orange Rollback
+Atlas -#redx GreenDB:Experiences failed Read requests
+InfraEngineer -> Atlas:Sets Read env var to Read endpoint (= BlueDB's endpoint)
+Atlas -> Atlas:Deploys sersice
+
+Atlas -> BlueDB:Executes Read and Write Queries Successfully
+note over InfraEngineer:Rollback done.
+
+end
+
+InfraEngineer -> Route53:Sets Read endpoint to GreenDB's endpoint (DNS change)
+
+InfraEngineer -> Atlas:Sets Read env var to Read endpoint (sersice by sersice)
+Atlas -> Atlas:Deploys sersice
+
+
+end
+note over Atlas:Reads go to GreenDB; Writes go to BlueDB
+group #pink Switchover Writes == Downtime
+
+InfraEngineer -> BlueDB:Sets BlueDB to Read-Only
+note over BlueDB:Enters Read-Only mode
+Atlas -#redx BlueDB:Experiences Failed Write Requests
+BlueDB -> GreenDB:Replication lag is resolved
+InfraEInfraEIer -> GreenDB:Makes GreenDB writable and stops replication
+note over GreenDB:Exits Read-Only mode
+InfraEIgineer -> Route53:Sets Write endpoint to GreenDB \n(DNS change)
+Atlas -> Atlas:Write endpoint DNS record is refreshed
+Atlas -> GreenDB:Executes some Write Queries Successfully
+Atlas -#redx GreenDB:Still Experiences Failed Write Requests through Proxy
+InfraEIgineer -> Route53:Sets Proxy endpoint to GreenDB's Proxy \n(DNS change)
+Atlas -> Atlas:Proxy endpoint DNS record is refreshed
+InfraEngineer -> BlueDB:Kills Connections
+Atlas -> GreenDB:Reconnects
+
+Atlas -> GreenDB:Executes Read and Write Queries Successfully
+
+group #orange Rollback
+Atlas -#redx GreenDB:Experiences some Failed Write Requests
+
+InfraEngineer -> GreenDB:Sets GreenDB to Read-Only
+note over GreenDB:Enters Read-Only mode
+Atlas -#redx GreenDB:Experiences 100% Failed Write Requests
+
+GreenDB -> BluePrimeDB:Replication lag is resolved
+InfraEIgineer -> BluePrimeDB:Makes BluePrimeDB writable and stops replication
+note over BluePrimeDB:Exits Read-Only mode
+InfraEIgineer -> Route53:Sets Read and Write endpoint to BluePrimeDB \n(DNS change)
+Atlas -> Atlas:Read and Write endpoint DNS record is refreshed
+Atlas -#redx BluePrimeDB:Still Experiences Failed Write Requests through Proxy
+
+InfraEngineer -> Route53:Sets Proxy endpoint to BluePrimeDB's Proxy \n(DNS change)
+Atlas -> Atlas:Proxy endpoint DNS record is refreshed
+InfraEInfraEIer -> GreenDB:Kills Connections
+Atlas -> BluePrimeDB:Reconnects
+
+
+Atlas -> BluePrimeDB:Executes Read and Write Queries Successfully
+note over InfraEIgineer: Rollback done.
+end
+
+end
